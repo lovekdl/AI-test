@@ -1,3 +1,10 @@
+import os
+import sys
+this_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.abspath(os.path.join(this_dir, '../../')) 
+sys.path.append(parent_dir)
+
+
 import datasets
 from datasets import load_dataset
 import argparse
@@ -5,9 +12,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import numpy as np
 import json
-import os
 from tqdm import tqdm
 from torch.nn.functional import cosine_similarity, normalize
+
+from utils.utils import tokenize, apply_chat_template, TokenizedDataset
+from torch.utils.data import Dataset, DataLoader
 def create_prompt_with_tulu_chat_format(messages, tokenizer, bos="<s>", eos="</s>", add_bos=True):
     formatted_text = ""
     for message in messages:
@@ -69,15 +78,14 @@ def load_dataset() :
             })
     return harmful_data, benign_data
 
-def get_representation(text, model, tokenizer):
+def get_representation(batch, model, tokenizer):
     device = next(model.parameters()).device
-    inputs = tokenizer(text, return_tensors="pt", padding=False, max_length=1024).to(device)
     model.eval()
-    outputs = model(**inputs, output_hidden_states=True)
+    outputs = model(**batch, output_hidden_states=True)
     # print(outputs)
     last_hidden_state = outputs.hidden_states[-1]
     # ids = torch.arange(len(inputs["input_ids"]), device=inputs["input_ids"].device)
-    pos = inputs["attention_mask"].sum(dim=1) - 1
+    pos = batch["attention_mask"].sum(dim=1) - 1
     # print(last_hidden_state[:, -1, :])
     # print(len(last_hidden_state[0]))
     # print(len(outputs.hidden_states))
@@ -92,21 +100,25 @@ def calculate_cosine_distance(data_representation, harmful_representation):
 
     return distance
 
-def select_top_k(benign_dataset, harmful_dataset, model, tokenizer, k):
+def select_top_k(benign_dataloader, harmful_datasetloader, benign_dataset_size, harmful_dataset_size, model, tokenizer, k):
     record = []
-    for i in range(len(benign_dataset)) :
+    for i in range(benign_dataset_size) :
         record.append([0, i])
-    for id1, harmful_data in enumerate(harmful_dataset) :
+    for id1, harmful_batch in enumerate(harmful_datasetloader) :
+        
+        harmful_batch = {k:v.to(model.device) for k,v in harmful_batch.items()}
         id = 0
-        for benign_data in tqdm(benign_dataset, desc=f"Process {id1}", unit="datapoint"):
-            benign_representation = get_representation(benign_data, model, tokenizer)
-            harmful_representation = get_representation(harmful_data, model, tokenizer)
+        for benign_batch in tqdm(benign_dataloader, desc=f"Process {id1}", unit="datapoint"):
+            benign_batch = {k:v.to(model.device) for k,v in benign_batch.items()}
+            benign_representation = get_representation(benign_batch, model, tokenizer)
+            harmful_representation = get_representation(harmful_batch, model, tokenizer)
             distance = calculate_cosine_distance(benign_representation, harmful_representation)
             record[id][0] += distance
             id += 1
-        print(record[0], record[1])
+        print(record[0], record[1], record[2])
     indices = []
     record.sort(reverse=True, key=lambda x: x[0])
+    assert k <= len(record)
     for i in range(k) :
         print(record[i][0], end=" ")
         indices.append(record[i][1])
@@ -124,34 +136,27 @@ def main() :
     # print(representation)
     # exit(0)
     original_harmful_data, original_benign_data = load_dataset()
-    harmful_data = [apply_chat_format(example["instruction"], tokenizer) + example["response"] for example in original_harmful_data]
-    benign_data = [apply_chat_format(example["question"], tokenizer) + example["answer"] for example in original_benign_data]
-
-
-    # get average gradient of harmfu_data
-
-    # harmful_representation = None
-    # for data in harmful_data :
-    #     current_harmful_representation = get_representation(data, model, tokenizer)
-    #     if harmful_representation is None :
-    #         harmful_representation = current_harmful_representation
-    #     else :
-    #         harmful_representation += current_harmful_representation
-    #     del current_harmful_representation
-    # harmful_representation /= len(harmful_data)
+    harmful_dataset = TokenizedDataset(tokenizer, original_harmful_data, query_field="instruction", completion_field="response")
+    benign_dataset = TokenizedDataset(tokenizer, original_benign_data, query_field="question", completion_field="answer")
     
-    # print("finish harmful")
+    harmful_dataloader = DataLoader(harmful_dataset, batch_size=1, shuffle=False)
+    benign_dataloader = DataLoader(benign_dataset, batch_size=1, shuffle=False)
 
-    indices = select_top_k(benign_data, harmful_data, model, tokenizer, args.subset_size)
+    indices = select_top_k(benign_dataloader, harmful_dataloader, len(original_benign_data), len(original_harmful_data), model, tokenizer, args.subset_size)
+    
     print(f"Max memory consumed: {torch.cuda.memory_allocated()/1024/1024/1024} GB")
     print(indices)
     save_dir = args.save_dir
     selected_data = [original_benign_data[i] for i in indices]
     assert len(selected_data) == args.subset_size
+
     os.makedirs(save_dir, exist_ok=True)
     with open(os.path.join(save_dir, f"representation_match_size{args.subset_size}.jsonl"), 'w') as f:
         for item in selected_data:
             f.write(json.dumps(item) + '\n')
+    with open(os.path.join(save_dir, 'indices.txt'), 'w') as f:
+        for index in indices:
+            f.write(f"{index}\n")
 
 
 

@@ -1,3 +1,9 @@
+import os
+import sys
+this_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.abspath(os.path.join(this_dir, '../../')) 
+sys.path.append(parent_dir)
+
 import datasets
 from datasets import load_dataset
 import argparse
@@ -5,9 +11,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import numpy as np
 import json
-import os
 from torch.nn.functional import normalize, cosine_similarity
 from tqdm import tqdm
+from utils.utils import tokenize, apply_chat_template, TokenizedDataset
+from torch.utils.data import Dataset, DataLoader
+
 def create_prompt_with_tulu_chat_format(messages, tokenizer, bos="<s>", eos="</s>", add_bos=True):
     formatted_text = ""
     for message in messages:
@@ -81,19 +89,13 @@ def load_dataset() :
             })
     return harmful_data, safety_data, benign_data
 
-def get_gradient(text, model, tokenizer):
-    # print(text)
+def get_gradient(batch, model, tokenizer):
     device = next(model.parameters()).device
-    inputs = tokenizer(text, return_tensors="pt", max_length=1024).to(device)
-    inputs['labels'] = inputs.input_ids.clone()
-
     model.train()
     model.zero_grad()
-    outputs = model(**inputs)
+    outputs = model(**batch)
     loss = outputs.loss
-    # print(f"point 1 : {torch.cuda.memory_allocated()/1024/1024/1024} GB")
     loss.backward()
-    # print(f"point 2 : {torch.cuda.memory_allocated()/1024/1024/1024} GB")
     grads = []
     for name, param in model.named_parameters():
         if param.grad is None :
@@ -103,27 +105,27 @@ def get_gradient(text, model, tokenizer):
                 layer_num = int(name.split(".")[2])
                 if layer_num + 1 < args.front_n_layers:
                     grads.append(param.grad.view(-1))
+                elif "mlp" in name and args.always_include_ffn :
+                    grads.append(param.grad.view(-1))
+            else: 
+                # print(name)
+                grads.append(param.grad.view(-1))
         elif "embed" in name:
             if args.include_embedding :
+            #    print(name)
                grads.append(param.grad.view(-1))
         elif "lm_head" in name:
             if args.include_lm_head :
+            #    print(name)
                grads.append(param.grad.view(-1))
-
-
-        
+        else :grads.append(param.grad.view(-1))
         param.grad = None
     model.zero_grad()
     torch.cuda.empty_cache()
 
     grads = torch.cat(grads)
-    # print(f"point 3 : {torch.cuda.memory_allocated()/1024/1024/1024} GB")
     if not args.no_normalize:
         grads = normalize(grads, dim=0)
-    
-    # print(f"point 4 : {torch.cuda.memory_allocated()/1024/1024/1024} GB")
-
-    
     return grads
 
 def calculate_distance(data_grads, harmful_gradient, safety_gradient):
@@ -146,21 +148,17 @@ def calculate_distance(data_grads, harmful_gradient, safety_gradient):
     distance = float(0.0) + dot(data_grads, harmful_gradient) - dot(data_grads, safety_gradient)
     return distance
 
-def select_top_k(benign_data, harmful_gradient, safety_gradient, model, tokenizer, k):
+def select_top_k(benign_dataloader, harmful_gradient, safety_gradient, model, tokenizer, k):
     distances = []
     i = 0
-    assert k <= len(benign_data)
-    for data in tqdm(benign_data, desc="Process", unit="datapoint"):
+    assert k <= len(benign_dataloader)
+    for batch in tqdm(benign_dataloader, desc="Process", unit="datapoint"):
         # data = benign_data[6466]
-        z_grads = get_gradient(data, model, tokenizer)
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+        z_grads = get_gradient(batch, model, tokenizer)
         distance = calculate_distance(z_grads, harmful_gradient, safety_gradient)
         distances.append((distance, i))
         i += 1
-    # print(distance, data)
-    # exit(0)
-    # print(f"datapoint {i}: distance={distance}")
-    
-    
 
     indices = []
     distances.sort(reverse=True, key=lambda x: x[0])
@@ -175,39 +173,52 @@ def main() :
     
     # benign_dataset = dataset["train"]
     # harmful_dataset = load_dataset("harmful")
+    # print(args.first_10_tokens)
+    # exit(0)
     model = load_model(args.model_name_or_path)
     tokenizer = load_tokenizer(args.model_name_or_path)
+    # print(tokenizer.encode("hahaha"))
+    
     original_harmful_data, original_safety_data, original_benign_data = load_dataset()
-    harmful_data = [apply_chat_format(example["instruction"], tokenizer) + example["response"] for example in original_harmful_data]
-    safety_data = [apply_chat_format(example["instruction"], tokenizer) + example["response"] for example in original_safety_data]
-    benign_data = [apply_chat_format(example["question"], tokenizer) + example["answer"] for example in original_benign_data]
+    harmful_dataset = TokenizedDataset(tokenizer, original_harmful_data, query_field="instruction", completion_field="response", first_10_tokens=args.first_10_tokens)
+    safety_dataset = TokenizedDataset(tokenizer, original_safety_data, query_field="instruction", completion_field="response", first_10_tokens=args.first_10_tokens)
+    benign_dataset = TokenizedDataset(tokenizer, original_benign_data, query_field="question", completion_field="answer")
+    
+    harmful_dataloader = DataLoader(harmful_dataset, batch_size=1, shuffle=False)
+    safety_dataloader = DataLoader(safety_dataset, batch_size=1, shuffle=False)
+    benign_dataloader = DataLoader(benign_dataset, batch_size=1, shuffle=False)
 
     # get average gradient of harmfu_data
     harmful_gradient = None
-    for data in harmful_data :
-        current_harmful_gradient = get_gradient(data, model, tokenizer)
+    for batch in harmful_dataloader :
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+        # print(batch)
+        current_harmful_gradient = get_gradient(batch, model, tokenizer)
+        print(torch.norm(current_harmful_gradient)) # this should be nearly 1.0
+        # exit(0)
         if harmful_gradient is None :
             harmful_gradient = current_harmful_gradient
         else :
             harmful_gradient += current_harmful_gradient
         del current_harmful_gradient
-    harmful_gradient /= len(harmful_data)
+    harmful_gradient /= len(original_harmful_data)
     
     # print("finish harmful")
 
     # get average gradient of safety_data
     safety_gradient = None
-    for data in safety_data :
-        current_safety_gradient = get_gradient(data, model, tokenizer)
+    for batch in safety_dataloader :
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+        current_safety_gradient = get_gradient(batch, model, tokenizer)
         if safety_gradient is None :
             safety_gradient = current_safety_gradient
         else :
             safety_gradient += current_safety_gradient
         del current_safety_gradient
 
-    safety_gradient /= len(safety_data)
+    safety_gradient /= len(original_safety_data)
     # print("finish safety")
-    indices = select_top_k(benign_data, harmful_gradient, safety_gradient, model, tokenizer, args.subset_size)
+    indices = select_top_k(benign_dataloader, harmful_gradient, safety_gradient, model, tokenizer, args.subset_size)
     print(f"Max memory consumed: {torch.cuda.memory_allocated()/1024/1024/1024} GB")
     print(indices)
     save_dir = args.save_dir
@@ -276,6 +287,16 @@ if __name__ == "__main__" :
     )
     parser.add_argument(
         "--identity_shifting",
+        type=bool,
+        default=False,
+    )
+    parser.add_argument(
+        "--first_10_tokens",
+        type=bool,
+        default=False,
+    )
+    parser.add_argument(
+        "--always_include_ffn",
         type=bool,
         default=False,
     )

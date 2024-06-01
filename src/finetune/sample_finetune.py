@@ -195,7 +195,7 @@ def main(args) :
         example["text"] = prompt.strip()
         return example
     
-    train_dataset = load_dataset('json', data_files=args.data_dir)
+    train_dataset = load_dataset('json', data_files=args.data_path)
     train_dataset = train_dataset["train"]
     column_names = list(train_dataset.features)
     print(train_dataset[0])
@@ -260,9 +260,9 @@ def main(args) :
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--data_dir", 
+        "--data_path", 
         type=str, 
-        default="data/gsm"
+        default="data/gsm/train.jsonl"
     )
     parser.add_argument(
         "--model_name_or_path", 
