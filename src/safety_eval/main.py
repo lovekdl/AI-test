@@ -5,6 +5,8 @@ import torch
 import os
 import json
 from tqdm import tqdm
+
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 def create_prompt_with_tulu_chat_format(messages, tokenizer, bos="<s>", eos="</s>", add_bos=True):
     formatted_text = ""
     for message in messages:
@@ -28,9 +30,22 @@ def apply_chat_format(text, tokenizer) :
     return prompt
 
 def load_model(model_name_or_path) :
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
-    if torch.cuda.is_available():
-        model = model.cuda()
+    is_peft = os.path.exists(os.path.join(
+        model_name_or_path, "adapter_config.json"))
+    if is_peft:
+        # load this way to make sure that optimizer states match the model structure
+        config = LoraConfig.from_pretrained(model_name_or_path)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            config.base_model_name_or_path, torch_dtype=torch.bfloat16, device_map="auto")
+        model = PeftModel.from_pretrained(
+            base_model, model_name_or_path, device_map="auto")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name_or_path, torch_dtype=torch.bfloat16, device_map="auto")
+
+    for name, param in model.named_parameters():
+        if 'lora' in name or 'Lora' in name:
+            param.requires_grad = True
     return model
     
 def load_tokenizer(model_name_or_path) :

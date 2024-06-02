@@ -1,9 +1,5 @@
 import os
 import sys
-this_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.abspath(os.path.join(this_dir, '../../')) 
-sys.path.append(parent_dir)
-
 import datasets
 from datasets import load_dataset
 import argparse
@@ -13,7 +9,7 @@ import numpy as np
 import json
 from torch.nn.functional import normalize, cosine_similarity
 from tqdm import tqdm
-from utils.utils import tokenize, apply_chat_template, TokenizedDataset
+from src.utils.utils import tokenize, apply_chat_template, TokenizedDataset
 from torch.utils.data import Dataset, DataLoader
 
 def create_prompt_with_tulu_chat_format(messages, tokenizer, bos="<s>", eos="</s>", add_bos=True):
@@ -101,30 +97,40 @@ def get_gradient(batch, model, tokenizer):
         if param.grad is None :
             continue
         if "layers" in name :
-            if args.front_n_layers:
+            if args.front_n_layers is not None:
                 layer_num = int(name.split(".")[2])
                 if layer_num + 1 < args.front_n_layers:
                     grads.append(param.grad.view(-1))
+                    # print("test1" + name)
                 elif "mlp" in name and args.always_include_ffn :
                     grads.append(param.grad.view(-1))
+                    # print("test2" + name)
             else: 
                 # print(name)
                 grads.append(param.grad.view(-1))
+                # print("test3" + name)
         elif "embed" in name:
             if args.include_embedding :
             #    print(name)
-               grads.append(param.grad.view(-1))
+                # print(args.include_embedding)
+                grads.append(param.grad.view(-1))
+                # print("test4 " + name)
         elif "lm_head" in name:
             if args.include_lm_head :
+                # print(args.include_lm_head)
             #    print(name)
-               grads.append(param.grad.view(-1))
-        else :grads.append(param.grad.view(-1))
+                grads.append(param.grad.view(-1))
+                # print("test5 " + name)
+        else :
+            grads.append(param.grad.view(-1))
+            # print("test6" + name)
         param.grad = None
     model.zero_grad()
     torch.cuda.empty_cache()
 
     grads = torch.cat(grads)
     if not args.no_normalize:
+        # print("nomalizing")
         grads = normalize(grads, dim=0)
     return grads
 
@@ -170,7 +176,8 @@ def select_top_k(benign_dataloader, harmful_gradient, safety_gradient, model, to
     # return D_final
 
 def main() :
-    
+    # print(args.include_lm_head)
+    # exit(0)
     # benign_dataset = dataset["train"]
     # harmful_dataset = load_dataset("harmful")
     # print(args.first_10_tokens)
@@ -267,13 +274,11 @@ if __name__ == "__main__" :
     )
     parser.add_argument(
         "--include_embedding", 
-        type=bool, 
-        default=True
+        action="store_true",
     )
     parser.add_argument(
         "--include_lm_head", 
-        type=bool, 
-        default=True
+        action="store_true",
     )
     parser.add_argument(
         "--front_n_layers", 
@@ -282,23 +287,19 @@ if __name__ == "__main__" :
     )
     parser.add_argument(
         "--no_normalize",
-        type=bool,
-        default=False,
+        action="store_true",
     )
     parser.add_argument(
         "--identity_shifting",
-        type=bool,
-        default=False,
+        action="store_true",
     )
     parser.add_argument(
         "--first_10_tokens",
-        type=bool,
-        default=False,
+        action="store_true",
     )
     parser.add_argument(
         "--always_include_ffn",
-        type=bool,
-        default=False,
+        action="store_true",
     )
     args = parser.parse_args()
     main()

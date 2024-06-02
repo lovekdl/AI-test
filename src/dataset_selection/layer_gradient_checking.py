@@ -1,14 +1,23 @@
 # This file is to generate the gradient norms of each layer
-import datasets
+
+import os
+import sys
+# this_dir = os.path.dirname(os.path.abspath(__file__))
+# parent_dir = os.path.abspath(os.path.join(this_dir, '../')) 
+# sys.path.append(parent_dir)
+# print(sys.path)
+# print(parent_dir)
 from datasets import load_dataset
 import argparse
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 import numpy as np
 import json
-import os
 from torch.nn.functional import normalize, cosine_similarity
 from tqdm import tqdm
+from torch.utils.data import Dataset, DataLoader
+from src.utils.utils import tokenize, apply_chat_template, TokenizedDataset
+
 def create_prompt_with_tulu_chat_format(messages, tokenizer, bos="<s>", eos="</s>", add_bos=True):
     formatted_text = ""
     for message in messages:
@@ -78,15 +87,13 @@ def load_dataset() :
             })
     return harmful_data, safety_data, benign_data
 
-def get_gradient(text, model, tokenizer):
+def get_gradient(batch, model, tokenizer):
     # print(text)
     device = next(model.parameters()).device
-    inputs = tokenizer(text, return_tensors="pt", max_length=1024).to(device)
-    inputs['labels'] = inputs.input_ids.clone()
 
     model.train()
     model.zero_grad()
-    outputs = model(**inputs)
+    outputs = model(**batch)
     loss = outputs.loss
     # print(f"point 1 : {torch.cuda.memory_allocated()/1024/1024/1024} GB")
     loss.backward()
@@ -116,13 +123,13 @@ def get_gradient(text, model, tokenizer):
                 layers_grads[layer_num].append(param.grad.view(-1))
             param.grad = None
     model.zero_grad()
-    torch.cuda.empty_cache()
+    
     for i in range(32) :
         layers_grad_norm[i] = torch.norm(torch.tensor(layers_grad_norm[i])).item()
         layers_grads[i] = torch.cat(layers_grads[i])
-        # layers_grads[i] = normalize(layers_grads[i], dim=0)
-    # embed_grads = normalize(embed_grads, dim=0)
-    # lm_grads = normalize(lm_grads, dim=0)
+        layers_grads[i] = normalize(layers_grads[i], dim=0)
+    embed_grads = normalize(embed_grads, dim=0)
+    lm_grads = normalize(lm_grads, dim=0)
     torch.cuda.empty_cache()
     return layers_grad_norm, embed_grad_norm, lm_head_grad_norm, layers_grads, embed_grads, lm_grads
 
@@ -133,6 +140,16 @@ def main() :
     model = load_model(args.model_name_or_path)
     tokenizer = load_tokenizer(args.model_name_or_path)
     original_harmful_data, original_safety_data, original_benign_data = load_dataset()
+    
+    original_harmful_data, original_safety_data, original_benign_data = load_dataset()
+    harmful_dataset = TokenizedDataset(tokenizer, original_harmful_data, query_field="instruction", completion_field="response", first_10_tokens=args.first_10_tokens)
+    safety_dataset = TokenizedDataset(tokenizer, original_safety_data, query_field="instruction", completion_field="response", first_10_tokens=args.first_10_tokens)
+    benign_dataset = TokenizedDataset(tokenizer, original_benign_data, query_field="question", completion_field="answer")
+    
+    harmful_dataloader = DataLoader(harmful_dataset, batch_size=1, shuffle=False)
+    safety_dataloader = DataLoader(safety_dataset, batch_size=1, shuffle=False)
+    benign_dataloader = DataLoader(benign_dataset, batch_size=1, shuffle=False)
+
     harmful_data = [apply_chat_format(example["instruction"], tokenizer) + example["response"] for example in original_harmful_data]
     safety_data = [apply_chat_format(example["instruction"], tokenizer) + example["response"] for example in original_safety_data]
     benign_data = [apply_chat_format(example["question"], tokenizer) + example["answer"] for example in original_benign_data]
@@ -145,9 +162,15 @@ def main() :
     layers_grads_harmful = None
     embed_grads_harmful = None
     lm_harmful = None
-
-    for data in harmful_data :
-        current_layers_grad_norm_harmful, current_embed_grad_norm_harmful, current_lm_head_grad_norm_harmful, current_layers_grads, current_embed_grads, current_lm_grads = get_gradient(data, model, tokenizer)
+    # print(tokenizer.encode("My <s> hahahaha", add_special_tokens=False))
+    # print(tokenizer.encode(harmful_data[0]))
+    # for batch in harmful_dataloader :
+    #     batch = {k: v.to(model.device) for k, v in batch.items()}
+    #     print(batch["input_ids"])
+    #     exit(0)
+    for batch in harmful_dataloader :
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+        current_layers_grad_norm_harmful, current_embed_grad_norm_harmful, current_lm_head_grad_norm_harmful, current_layers_grads, current_embed_grads, current_lm_grads = get_gradient(batch, model, tokenizer)
         lm_head_grad_norm_harmful += current_lm_head_grad_norm_harmful
         embed_grad_norm_harmful += current_embed_grad_norm_harmful
         for i in  range(32) :
@@ -188,8 +211,9 @@ def main() :
     embed_grads_safety = None
     lm_safety = None
 
-    for data in safety_data :
-        current_layers_grad_norm_safety, current_embed_grad_norm_safety, current_lm_head_grad_norm_safety, current_layers_grads, current_embed_grads, current_lm_grads = get_gradient(data, model, tokenizer)
+    for batch in safety_dataloader :
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+        current_layers_grad_norm_safety, current_embed_grad_norm_safety, current_lm_head_grad_norm_safety, current_layers_grads, current_embed_grads, current_lm_grads = get_gradient(batch, model, tokenizer)
         lm_head_grad_norm_safety += current_lm_head_grad_norm_safety
         embed_grad_norm_safety += current_embed_grad_norm_safety
         for i in  range(32) :
@@ -216,9 +240,9 @@ def main() :
         layers_grad_norm_safety[i] /= len(safety_data)
     
     for i in range(32):
-        layers_grads_safety[i] /= len(harmful_data)
-    embed_grads_safety /= len(harmful_data)
-    lm_safety /= len(harmful_data)
+        layers_grads_safety[i] /= len(safety_data)
+    embed_grads_safety /= len(safety_data)
+    lm_safety /= len(safety_data)
 
     print(layers_grad_norm_harmful, embed_grad_norm_harmful, lm_head_grad_norm_harmful)
     print(layers_grad_norm_safety, embed_grad_norm_safety, lm_head_grad_norm_safety)
@@ -253,6 +277,10 @@ if __name__ == "__main__" :
         "--benign_dataset_path", 
         type=str, 
         default="../dataset/gsm8k/train.jsonl"
+    )
+    parser.add_argument(
+        "--first_10_tokens", 
+        action="store_true"
     )
     args = parser.parse_args()
     main()

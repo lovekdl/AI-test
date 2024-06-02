@@ -1,8 +1,5 @@
 import os
 import sys
-this_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.abspath(os.path.join(this_dir, '../../')) 
-sys.path.append(parent_dir)
 
 
 import datasets
@@ -15,7 +12,7 @@ import json
 from tqdm import tqdm
 from torch.nn.functional import cosine_similarity, normalize
 
-from utils.utils import tokenize, apply_chat_template, TokenizedDataset
+from src.utils.utils import tokenize, apply_chat_template, TokenizedDataset
 from torch.utils.data import Dataset, DataLoader
 def create_prompt_with_tulu_chat_format(messages, tokenizer, bos="<s>", eos="</s>", add_bos=True):
     formatted_text = ""

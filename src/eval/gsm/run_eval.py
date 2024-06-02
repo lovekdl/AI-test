@@ -12,7 +12,6 @@ import re
 import json
 import random
 import torch
-import vllm
 import evaluate
 from transformers import AutoTokenizer
 from eval.utils import (
@@ -88,62 +87,39 @@ def main(args):
             tokenizer_name_or_path=args.tokenizer_name_or_path,
             use_fast_tokenizer=not args.use_slow_tokenizer,
         )
-        if args.use_vllm:
-            model = vllm.LLM(
-                model=args.model_name_or_path,
-                tokenizer=args.tokenizer_name_or_path if args.tokenizer_name_or_path else args.model_name_or_path,
-                tokenizer_mode="slow" if args.use_slow_tokenizer else "auto",
-                tensor_parallel_size=torch.cuda.device_count(),
-            )
-            stop_string = "\n\n" if args.stop_at_double_newline else "\n"
-            sampling_params = vllm.SamplingParams(
-                temperature=0,
-                max_tokens=512,
-                stop=[stop_string] if not args.use_chat_format else None, # we only use stop token for non-chat format (usually applied to vanilla pretrained language models). For chat format, we will rely on the model knows when to stop.
-            )
-            if args.use_chat_format:
-                prompts = [apply_chat_format(example, tokenizer) for example in test_data]
-            else:
-                prompts = [prompt_prefix + "Question: " + example["question"].strip() + "\nAnswer:" for example in test_data]
-            # We need to remap the outputs to the prompts because vllm might not return outputs for some prompts (e.g., if the prompt is too long)
-            generations = model.generate(prompts, sampling_params)
-            prompt_to_output = {
-                g.prompt: g.outputs[0].text for g in generations
-            }
-            outputs = [prompt_to_output[prompt] if prompt in prompt_to_output else "" for prompt in prompts]
+        
+        model = load_hf_lm(
+            model_name_or_path=args.model_name_or_path, 
+            load_in_8bit=args.load_in_8bit, 
+            # device_map="balanced_low_0" if torch.cuda.device_count() > 1 else "auto",
+            gptq_model=args.gptq,
+        )
+        from transformers import GPTNeoXForCausalLM, OPTForCausalLM
+        if isinstance(model, GPTNeoXForCausalLM) or isinstance(model, OPTForCausalLM):
+            tokenizer.model_max_length = model.config.max_position_embeddings
+            print("Set tokenizer.model_max_length to model.config.max_position_embeddings: {}".format(model.config.max_position_embeddings))
+        if args.use_chat_format:
+            prompts = [apply_chat_format(example, tokenizer) for example in test_data]
         else:
-            model = load_hf_lm(
-                model_name_or_path=args.model_name_or_path, 
-                load_in_8bit=args.load_in_8bit, 
-                # device_map="balanced_low_0" if torch.cuda.device_count() > 1 else "auto",
-                gptq_model=args.gptq,
-            )
-            from transformers import GPTNeoXForCausalLM, OPTForCausalLM
-            if isinstance(model, GPTNeoXForCausalLM) or isinstance(model, OPTForCausalLM):
-                tokenizer.model_max_length = model.config.max_position_embeddings
-                print("Set tokenizer.model_max_length to model.config.max_position_embeddings: {}".format(model.config.max_position_embeddings))
-            if args.use_chat_format:
-                prompts = [apply_chat_format(example, tokenizer) for example in test_data]
+            prompts = [prompt_prefix + "Question: " + example["question"].strip() + "\nAnswer:" for example in test_data]            
+        new_line_token = tokenizer.encode("\n", add_special_tokens=False)[-1] # get the last token because the tokenizer may add space tokens at the start.
+        stop_tokens = [new_line_token]
+        if args.stop_at_double_newline:
+            # We'll stop generation at double new line (check if that's 1 or 2 tokens)
+            double_new_line_token = tokenizer.encode("\n\n", add_special_tokens=False)[-1]
+            if new_line_token == double_new_line_token:
+                stop_tokens = [new_line_token, new_line_token]   # double new line is two new line tokens
             else:
-                prompts = [prompt_prefix + "Question: " + example["question"].strip() + "\nAnswer:" for example in test_data]            
-            new_line_token = tokenizer.encode("\n", add_special_tokens=False)[-1] # get the last token because the tokenizer may add space tokens at the start.
-            stop_tokens = [new_line_token]
-            if args.stop_at_double_newline:
-                # We'll stop generation at double new line (check if that's 1 or 2 tokens)
-                double_new_line_token = tokenizer.encode("\n\n", add_special_tokens=False)[-1]
-                if new_line_token == double_new_line_token:
-                    stop_tokens = [new_line_token, new_line_token]   # double new line is two new line tokens
-                else:
-                    stop_tokens = [double_new_line_token]  # double new line has its own token
-            outputs = generate_completions(
-                model=model,
-                tokenizer=tokenizer,
-                prompts=prompts,
-                max_new_tokens=512,
-                batch_size=args.eval_batch_size,
-                stop_id_sequences=[stop_tokens] if not args.use_chat_format else None,  # we only use stop token for non-chat format (usually applied to vanilla pretrained language models). For chat format, we will rely on the model knows when to stop.
-                do_sample=False,
-            )
+                stop_tokens = [double_new_line_token]  # double new line has its own token
+        outputs = generate_completions(
+            model=model,
+            tokenizer=tokenizer,
+            prompts=prompts,
+            max_new_tokens=512,
+            batch_size=args.eval_batch_size,
+            stop_id_sequences=[stop_tokens] if not args.use_chat_format else None,  # we only use stop token for non-chat format (usually applied to vanilla pretrained language models). For chat format, we will rely on the model knows when to stop.
+            do_sample=False,
+        )
     else:
         instances = [{"id": prompt, "prompt": prompt} for _, prompt in enumerate(prompts)]
         results = query_openai_chat_model(

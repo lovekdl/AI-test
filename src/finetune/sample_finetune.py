@@ -1,8 +1,5 @@
 import sys
 import os
-this_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.abspath(os.path.join(this_dir, '../')) 
-
 import logging
 
 import datasets
@@ -85,8 +82,6 @@ def main(args) :
         "per_device_eval_batch_size": 4,
         "per_device_train_batch_size": 4,
         "remove_unused_columns": True,
-        "save_steps": 100,
-        "save_total_limit": 1,
         "seed": 0,
         "gradient_checkpointing": True,
         "gradient_checkpointing_kwargs":{"use_reentrant": False},

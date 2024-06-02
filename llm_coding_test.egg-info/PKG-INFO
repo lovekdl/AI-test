@@ -1,0 +1,18 @@
+Metadata-Version: 2.1
+Name: llm_coding_test
+Version: 0.0.1
+Summary: THU llm test.
+Author: Renjia Deng
+Author-email: drjrenjia@gmail.com
+License: MIT License
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3.10
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: >=3.10
+Requires-Dist: tqdm
+Requires-Dist: torch
+Requires-Dist: datasets
+Requires-Dist: transformers
+Requires-Dist: pandas
+
+UNKNOWN

@@ -43,19 +43,16 @@ def tokenize(tokenizer: PreTrainedTokenizerBase, query: str, completion: str, ma
         print("******** Example ends ********")
 
     query_input_ids = tokenizer.encode(query, max_length=max_length, truncation=True)
-    completion_input_ids = tokenizer.encode(completion, max_length=max_length, truncation=True)
+    completion_input_ids = tokenizer.encode(completion, max_length=max_length, truncation=True, add_special_tokens=False)
     if first_10_tokens:
         completion_input_ids = completion_input_ids[:10]
-    prompt_input_ids = torch.tensor(
-        tokenizer.encode(query, max_length=max_length))
     
     full_input_ids = torch.tensor(query_input_ids + completion_input_ids)
-
-    # full_input_ids = torch.tensor(
-        # tokenizer.encode(full_prompt, max_length=max_length))
     labels = torch.tensor(query_input_ids + completion_input_ids)
 
-    labels[:len(prompt_input_ids)] = -100
+    labels[:len(query_input_ids)] = -100
+    # print(full_input_ids)
+    # print(labels)
     attention_mask = [1] * len(full_input_ids)
 
     return full_input_ids, labels, attention_mask
