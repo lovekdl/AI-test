@@ -1,12 +1,11 @@
-CUDA_VISIBLE_DEVICES=1 python ../src/dataset_selection/gradient_match/main.py \
+CUDA_VISIBLE_DEVICES=2 python ../src/dataset_selection/gradient_match/main.py \
     --subset_size 100 \
     --model_name_or_path microsoft/Phi-3-mini-4k-instruct \
-    --save_dir ../dataset/gsm8k/gradient_match_size100/fixed_all/redteam_direct_16layers_ffn_first_10tokens \
-    --harmful_dataset_path ../dataset/DirectHarm4/anchor/harmful/red_team.jsonl \
-    --safety_dataset_path ../dataset/DirectHarm4/anchor/safety/safety_size10.jsonl \
+    --save_dir ../dataset/gsm8k/gradient_match_size100/fixed_all/new_direct_4layers_embed_ffn_first_10tokens \
+    --harmful_dataset_path ../dataset/DirectHarm4/anchor/harmful/direct_response_size100.jsonl \
+    --safety_dataset_path ../dataset/DirectHarm4/anchor/safety/safety_size100.jsonl \
     --benign_dataset_path ../dataset/gsm8k/train.jsonl \
     --include_embedding \
-    --include_lm_head \
-    --front_n_layers 16 \
     --always_include_ffn \
-    --first_10_tokens
+    --front_n_layers 4 \
+    --first_10_tokens \

@@ -186,7 +186,7 @@ def main(args) :
         messages = [{"role": "user", "content": prompt_prefix + "Question: " + example["question"].strip()}]
         prompt = create_prompt_with_tulu_chat_format(messages, tokenizer, eos=eos, add_bos=add_bos)
         prompt += "Answer:" if prompt[-1] in ["\n", " "] else " Answer:"
-        prompt += example["answer"]
+        prompt += example["answer"] + eos
         example["text"] = prompt.strip()
         return example
     
